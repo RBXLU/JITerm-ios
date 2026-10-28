@@ -75,6 +75,8 @@ chroot_mounts() {
     mount --bind /dev "$MNT/dev"
     mount --bind /dev/pts "$MNT/dev/pts"
     mkdir -p "$MNT/run"; mount -t tmpfs tmpfs "$MNT/run"
+    # В Arch resolv.conf — ссылка на /run/systemd/..., которой нет снаружи chroot
+    rm -f "$MNT/etc/resolv.conf"
     cp -L /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || echo "nameserver 10.0.2.3" > "$MNT/etc/resolv.conf"
 }
 
@@ -243,8 +245,17 @@ EOF
 EOF
     kernel="$MNT/boot/Image"
     [ -f "$kernel" ] || kernel="$MNT/boot/Image.gz"
-    initrd="$MNT/boot/initramfs-linux-fallback.img"
-    [ -f "$initrd" ] || initrd="$MNT/boot/initramfs-linux.img"
+    # Готовый initramfs собран под чужое железо — пересобираем со всеми
+    # драйверами (без autodetect), чтобы нашёлся virtio-диск QEMU
+    say "Сборка initramfs для QEMU (несколько минут)…"
+    kver=$(ls "$MNT/usr/lib/modules" | grep -v extramodules | sort -V | tail -n1)
+    if [ -n "$kver" ] && chroot "$MNT" mkinitcpio -k "$kver" -S autodetect -g /boot/initramfs-jiterm.img >/dev/null 2>&1; then
+        initrd="$MNT/boot/initramfs-jiterm.img"
+    else
+        say "mkinitcpio не сработал, беру готовый initramfs"
+        initrd="$MNT/boot/initramfs-linux-fallback.img"
+        [ -f "$initrd" ] || initrd="$MNT/boot/initramfs-linux.img"
+    fi
     [ -f "$kernel" ] && [ -f "$initrd" ] || die "ядро Arch не найдено в /boot"
     cp "$kernel" "$DISTRO_ROOT/arch/vmlinuz"
     cp "$initrd" "$DISTRO_ROOT/arch/initrd.img"
