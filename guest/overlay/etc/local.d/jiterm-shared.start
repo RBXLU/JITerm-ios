@@ -1,0 +1,7 @@
+#!/bin/sh
+# Общая папка с приложением "Файлы" на iPhone (virtio-9p, тег jiterm)
+mkdir -p /root/shared
+if ! mountpoint -q /root/shared; then
+    modprobe -q 9pnet_virtio 2>/dev/null
+    mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,cache=none jiterm /root/shared 2>/dev/null || true
+fi

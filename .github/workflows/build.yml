@@ -1,0 +1,87 @@
+name: JITerm iOS (IPA)
+
+on:
+  push:
+    branches: [main]
+    paths: ["guest/**", "ios/**", "scripts/**", ".github/workflows/build.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guest:
+    name: Alpine Linux (aarch64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static qemu-utils e2fsprogs
+      - name: Build guest image
+        run: |
+          sudo guest/build-guest.sh "$RUNNER_TEMP/guest"
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/guest"
+          chmod 644 "$RUNNER_TEMP"/guest/*
+      # Без artifacts: образ передаётся следующему шагу через релиз jiterm-guest
+      - name: Publish guest image to release "jiterm-guest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete jiterm-guest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create jiterm-guest "$RUNNER_TEMP"/guest/* -R "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "JITerm: гостевой образ Alpine (служебный)" \
+            --notes "Промежуточные файлы сборки JITerm (ядро, initramfs, rootfs). Ставить нужно JITerm.ipa из релиза jiterm-latest."
+
+  ios:
+    name: Build IPA
+    needs: guest
+    runs-on: macos-15
+    env:
+      PROJ: .
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download guest image from release "jiterm-guest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download jiterm-guest -R "$GITHUB_REPOSITORY" -D "$PROJ/ios/Resources/Guest"
+      - name: Install XcodeGen and ldid
+        run: brew install xcodegen ldid
+      - name: Fetch QEMU frameworks (from UTM.ipa)
+        run: $PROJ/scripts/fetch-qemu.sh "$PROJ/ios/Frameworks"
+      - name: Generate Xcode project
+        working-directory: ${{ env.PROJ }}/ios
+        run: xcodegen generate
+      - name: Build
+        working-directory: ${{ env.PROJ }}/ios
+        run: |
+          xcodebuild -version
+          set -o pipefail
+          xcodebuild build \
+            -project JITerm.xcodeproj -scheme JITerm -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee build.log | grep -E "error:|warning: .*JITerm|BUILD" || true
+          test -d build/Build/Products/Release-iphoneos/JITerm.app || { tail -100 build.log; exit 1; }
+      - name: Package IPA
+        run: |
+          $PROJ/scripts/package-ipa.sh \
+            "$PROJ/ios/build/Build/Products/Release-iphoneos/JITerm.app" \
+            "$PROJ/ios/Frameworks" "$RUNNER_TEMP/JITerm.ipa"
+      - name: Publish release "jiterm-latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete jiterm-latest --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create jiterm-latest "$RUNNER_TEMP/JITerm.ipa" -R "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "JITerm (сборка ${{ github.run_number }})" \
+            --notes "Неподписанный IPA для сайдлоада. Инструкция: INSTALL.md и README.md в репозитории. Коммит: ${GITHUB_SHA::7}"

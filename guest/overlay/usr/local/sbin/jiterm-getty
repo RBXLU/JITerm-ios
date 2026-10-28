@@ -1,0 +1,5 @@
+#!/bin/sh
+# getty для консоли JITerm; если устройства нет (вкладка не подключена) — тихо ждём
+tty="$1"
+[ -c "/dev/$tty" ] || exec sleep 300
+exec /sbin/getty -n -l /usr/local/bin/jiterm-login 0 "$tty" xterm-256color

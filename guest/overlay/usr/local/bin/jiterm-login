@@ -1,0 +1,6 @@
+#!/bin/sh
+# Автовход root, если в cmdline ядра нет jiterm.noautologin
+if grep -qw jiterm.noautologin /proc/cmdline 2>/dev/null; then
+    exec /bin/login
+fi
+exec /bin/login -f root

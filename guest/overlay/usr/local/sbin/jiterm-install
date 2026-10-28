@@ -1,0 +1,277 @@
+#!/bin/sh
+# jiterm-install — установка другой системы рядом с Alpine.
+#
+#   jiterm-install debian     Debian 13 (trixie), arm64
+#   jiterm-install arch       Arch Linux ARM, aarch64
+#   jiterm-install list       что установлено
+#   jiterm-install remove ИМЯ удалить систему
+#
+# Система ставится в образ диска в общей папке приложения
+# (~/shared/.jiterm/distros/ИМЯ/disk.img, папка скрыта в «Файлах»).
+# Туда же копируются её ядро и initramfs, а файл distro.json сообщает
+# приложению, как её загружать. Выбор системы — Настройки JITerm → «Система».
+
+set -eu
+
+DISTRO_ROOT=/root/shared/.jiterm/distros
+MNT=/mnt/jiterm-target
+DISK_SIZE=${JITERM_DISK_SIZE:-16G}
+DEBIAN_SUITE=${JITERM_DEBIAN_SUITE:-trixie}
+DEBIAN_MIRROR=${JITERM_DEBIAN_MIRROR:-http://deb.debian.org/debian}
+ALARM_URL=${JITERM_ALARM_URL:-http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz}
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mОшибка:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Использование:
+  jiterm-install debian        установить Debian 13 (≈1,5 ГБ, 20–60 минут)
+  jiterm-install arch          установить Arch Linux ARM (≈2,5 ГБ, скачивание 800 МБ)
+  jiterm-install list          установленные системы
+  jiterm-install remove ИМЯ    удалить систему
+
+После установки: Настройки JITerm → «Система» → выберите систему
+и перезапустите приложение.
+EOF
+}
+
+require_alpine() {
+    [ "$(id -u)" = 0 ] || die "нужен root"
+    [ -f /etc/alpine-release ] || die "ставить другие системы можно только из встроенного Alpine"
+    grep -q ' /root/shared ' /proc/mounts || die "общая папка не подключена — включите «Общая папка» в настройках JITerm и перезапустите"
+}
+
+cleanup() {
+    set +e
+    for m in sys/firmware/efi/efivars dev/pts dev proc sys run; do
+        mountpoint -q "$MNT/$m" 2>/dev/null && umount -l "$MNT/$m"
+    done
+    mountpoint -q "$MNT" 2>/dev/null && umount "$MNT"
+}
+
+prepare_disk() {
+    name=$1
+    dir="$DISTRO_ROOT/$name"
+    if [ -f "$dir/distro.json" ]; then
+        printf 'Система %s уже установлена. Переустановить (все её данные пропадут)? [y/N] ' "$name"
+        read -r ans
+        case "$ans" in y|Y|д|Д) ;; *) exit 0 ;; esac
+    fi
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    say "Диск $DISK_SIZE (занимает место только по факту записи)"
+    apk add -q e2fsprogs >/dev/null
+    truncate -s "$DISK_SIZE" "$dir/disk.img"
+    mkfs.ext4 -q -F -L "jiterm-$name" -m 0 -E lazy_itable_init=1,lazy_journal_init=1 "$dir/disk.img"
+    mkdir -p "$MNT"
+    mount -o loop,noatime "$dir/disk.img" "$MNT"
+    trap cleanup EXIT INT TERM
+}
+
+chroot_mounts() {
+    mount -t proc proc "$MNT/proc"
+    mount -t sysfs sys "$MNT/sys"
+    mount --bind /dev "$MNT/dev"
+    mount --bind /dev/pts "$MNT/dev/pts"
+    mkdir -p "$MNT/run"; mount -t tmpfs tmpfs "$MNT/run"
+    cp -L /etc/resolv.conf "$MNT/etc/resolv.conf" 2>/dev/null || echo "nameserver 10.0.2.3" > "$MNT/etc/resolv.conf"
+}
+
+# Общая настройка systemd-систем: автологин на консолях, агент JITerm,
+# общая папка, сеть, приветствие.
+configure_systemd_guest() {
+    name=$1
+    say "Настройка $name для JITerm"
+    echo jiterm > "$MNT/etc/hostname"
+    cat > "$MNT/etc/hosts" <<'EOF'
+127.0.0.1   localhost jiterm
+::1         localhost jiterm
+EOF
+    cat > "$MNT/etc/fstab" <<'EOF'
+/dev/vda      /             ext4  rw,relatime,errors=remount-ro  0 1
+jiterm        /root/shared  9p    trans=virtio,version=9p2000.L,msize=262144,cache=none,nofail,x-systemd.device-timeout=5s  0 0
+EOF
+    mkdir -p "$MNT/root/shared"
+
+    # Автологин root на всех консолях (ttyAMA0 + вкладки hvc0..hvc2)
+    mkdir -p "$MNT/etc/systemd/system/serial-getty@.service.d"
+    cat > "$MNT/etc/systemd/system/serial-getty@.service.d/jiterm.conf" <<'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root --keep-baud 115200,57600,38400,9600 %I xterm-256color
+EOF
+    mkdir -p "$MNT/etc/systemd/system/getty.target.wants"
+    for tty in ttyAMA0 hvc0 hvc1 hvc2; do
+        ln -sf /usr/lib/systemd/system/serial-getty@.service \
+            "$MNT/etc/systemd/system/getty.target.wants/serial-getty@$tty.service"
+    done
+
+    # Агент JITerm (ресайз окон, часы, выключение) и утилиты
+    install -m 755 /usr/local/sbin/jiterm-agent "$MNT/usr/local/sbin/jiterm-agent"
+    install -m 755 /usr/local/bin/jiterm-desktop "$MNT/usr/local/bin/jiterm-desktop"
+    cat > "$MNT/etc/systemd/system/jiterm-agent.service" <<'EOF'
+[Unit]
+Description=JITerm host agent (terminal resize, clock sync)
+After=systemd-udev-settle.service dev-virtio\x2dports-jiterm.control.device
+
+[Service]
+ExecStart=/usr/local/sbin/jiterm-agent
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    mkdir -p "$MNT/etc/systemd/system/multi-user.target.wants"
+    ln -sf /etc/systemd/system/jiterm-agent.service \
+        "$MNT/etc/systemd/system/multi-user.target.wants/jiterm-agent.service"
+
+    # Сеть: DHCP на virtio-net (slirp QEMU)
+    mkdir -p "$MNT/etc/systemd/network"
+    cat > "$MNT/etc/systemd/network/20-jiterm.network" <<'EOF'
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+EOF
+
+    # Профиль, vim, приветствие
+    mkdir -p "$MNT/etc/profile.d"
+    cp /etc/profile.d/jiterm.sh "$MNT/etc/profile.d/jiterm.sh"
+    cp /root/.vimrc "$MNT/root/.vimrc" 2>/dev/null || true
+    grep -q jiterm.sh "$MNT/root/.bashrc" 2>/dev/null || \
+        echo '[ -r /etc/profile.d/jiterm.sh ] && . /etc/profile.d/jiterm.sh' >> "$MNT/root/.bashrc"
+}
+
+write_distro_json() {
+    name=$1 title=$2 kernel=$3 initrd=$4 cmdline=$5
+    dir="$DISTRO_ROOT/$name"
+    cat > "$dir/distro.json" <<EOF
+{
+  "id": "$name",
+  "title": "$title",
+  "kernel": "$kernel",
+  "initrd": "$initrd",
+  "disk": "disk.img",
+  "diskFormat": "raw",
+  "cmdline": "$cmdline",
+  "installed": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+install_debian() {
+    prepare_disk debian
+    say "Ставлю debootstrap"
+    apk add -q debootstrap gpgv perl dpkg tar >/dev/null
+    say "debootstrap $DEBIAN_SUITE (самый долгий шаг)…"
+    debootstrap --arch=arm64 --variant=minbase \
+        --include=systemd,systemd-sysv,systemd-timesyncd,udev,dbus,kmod,linux-image-arm64,initramfs-tools,bash,bash-completion,ca-certificates,locales,sudo,iproute2,iputils-ping,procps,less,nano,vim,git,curl,wget,htop,tmux,python3,python3-pip,python3-venv,openssh-client \
+        "$DEBIAN_SUITE" "$MNT" "$DEBIAN_MIRROR"
+
+    chroot_mounts
+    cat > "$MNT/etc/apt/sources.list" <<EOF
+deb $DEBIAN_MIRROR $DEBIAN_SUITE main contrib non-free-firmware
+deb $DEBIAN_MIRROR $DEBIAN_SUITE-updates main contrib non-free-firmware
+deb http://security.debian.org/debian-security $DEBIAN_SUITE-security main contrib non-free-firmware
+EOF
+    configure_systemd_guest debian
+    chroot "$MNT" /bin/sh -e <<'EOF'
+passwd -d root >/dev/null
+systemctl enable systemd-networkd >/dev/null 2>&1 || true
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+printf '[global]\nbreak-system-packages = true\n' > /etc/pip.conf
+printf 'nameserver 10.0.2.3\n' > /etc/resolv.conf
+apt-get clean
+EOF
+    cat > "$MNT/etc/motd" <<'EOF'
+
+  JITerm — Debian (arm64) на QEMU
+  apt install <пакет>   установить программу
+  ~/shared              общая папка с приложением «Файлы»
+  jiterm-desktop xfce   рабочий стол (вкладка «Экран»)
+
+EOF
+    kernel=$(ls "$MNT"/boot/vmlinuz-* | sort -V | tail -n1)
+    initrd=$(ls "$MNT"/boot/initrd.img-* | sort -V | tail -n1)
+    [ -f "$kernel" ] && [ -f "$initrd" ] || die "ядро Debian не найдено в /boot"
+    cp "$kernel" "$DISTRO_ROOT/debian/vmlinuz"
+    cp "$initrd" "$DISTRO_ROOT/debian/initrd.img"
+    write_distro_json debian "Debian 13 (trixie)" vmlinuz initrd.img "root=/dev/vda rw console=ttyAMA0"
+}
+
+install_arch() {
+    prepare_disk arch
+    apk add -q libarchive-tools >/dev/null
+    say "Скачиваю Arch Linux ARM (~800 МБ)…"
+    tarball="$MNT/alarm.tar.gz"
+    wget -O "$tarball" "$ALARM_URL"
+    if wget -q -O "$tarball.md5" "$ALARM_URL.md5"; then
+        expected=$(cut -d' ' -f1 "$tarball.md5")
+        actual=$(md5sum "$tarball" | cut -d' ' -f1)
+        [ "$expected" = "$actual" ] || die "контрольная сумма архива не совпала, попробуйте ещё раз"
+        say "Контрольная сумма совпала"
+    fi
+    say "Распаковка…"
+    bsdtar -xpf "$tarball" -C "$MNT"
+    rm -f "$tarball" "$tarball.md5"
+
+    chroot_mounts
+    configure_systemd_guest arch
+    say "Инициализация ключей pacman (несколько минут)…"
+    chroot "$MNT" /bin/sh -e <<'EOF'
+passwd -d root >/dev/null
+userdel -r alarm >/dev/null 2>&1 || true
+pacman-key --init >/dev/null
+pacman-key --populate archlinuxarm >/dev/null
+ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+systemctl enable systemd-networkd systemd-resolved >/dev/null 2>&1 || true
+gpgconf --kill all >/dev/null 2>&1 || true
+EOF
+    rm -f "$MNT/etc/resolv.conf"
+    ln -sf /run/systemd/resolve/stub-resolv.conf "$MNT/etc/resolv.conf"
+    cat > "$MNT/etc/motd" <<'EOF'
+
+  JITerm — Arch Linux ARM (aarch64) на QEMU
+  pacman -Syu           обновить систему
+  pacman -S <пакет>     установить программу
+  ~/shared              общая папка с приложением «Файлы»
+  jiterm-desktop xfce   рабочий стол (вкладка «Экран»)
+
+EOF
+    kernel="$MNT/boot/Image"
+    [ -f "$kernel" ] || kernel="$MNT/boot/Image.gz"
+    initrd="$MNT/boot/initramfs-linux-fallback.img"
+    [ -f "$initrd" ] || initrd="$MNT/boot/initramfs-linux.img"
+    [ -f "$kernel" ] && [ -f "$initrd" ] || die "ядро Arch не найдено в /boot"
+    cp "$kernel" "$DISTRO_ROOT/arch/vmlinuz"
+    cp "$initrd" "$DISTRO_ROOT/arch/initrd.img"
+    write_distro_json arch "Arch Linux ARM" vmlinuz initrd.img "root=/dev/vda rw console=ttyAMA0"
+}
+
+list() {
+    echo "alpine   Alpine Linux (встроенная)"
+    for f in "$DISTRO_ROOT"/*/distro.json; do
+        [ -f "$f" ] || continue
+        d=$(dirname "$f")
+        size=$(du -sh "$d" 2>/dev/null | cut -f1)
+        printf '%-8s %s (%s)\n' "$(basename "$d")" "$(sed -n 's/.*"title": "\(.*\)".*/\1/p' "$f")" "$size"
+    done
+}
+
+case "${1:-}" in
+    debian) require_alpine; install_debian ;;
+    arch) require_alpine; install_arch ;;
+    list) list; exit 0 ;;
+    remove)
+        [ -n "${2:-}" ] && [ -d "$DISTRO_ROOT/$2" ] || die "нет такой системы"
+        rm -rf "${DISTRO_ROOT:?}/$2"
+        say "Система $2 удалена"
+        exit 0 ;;
+    *) usage; exit 1 ;;
+esac
+
+sync
+say "Готово! Настройки JITerm → «Система» → выберите её и перезапустите приложение."

@@ -1,0 +1,71 @@
+# XcodeGen-описание проекта: xcodegen generate → JITerm.xcodeproj
+name: JITerm
+options:
+  bundleIdPrefix: com.rbxlu
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.10.0
+targets:
+  JITerm:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Assets.xcassets
+      # Ядро, initramfs и диск Alpine (кладёт CI: guest/build-guest.sh)
+      - path: Resources/Guest
+        type: folder
+        buildPhase: resources
+        optional: true
+    dependencies:
+      - package: SwiftTerm
+    info:
+      path: Generated/Info.plist
+      properties:
+        CFBundleDisplayName: JITerm
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: JITerm открывает порты Linux-серверов для устройств в локальной сети, если вы включили эту опцию.
+        ITSAppUsesNonExemptEncryption: false
+        UIStatusBarStyle: UIStatusBarStyleLightContent
+        # Фоновый режим: геолокация не даёт iOS заморозить Linux
+        UIBackgroundModes:
+          - location
+        NSLocationWhenInUseUsageDescription: JITerm использует геолокацию только чтобы iOS не останавливала Linux в фоне. Координаты не сохраняются и никуда не передаются.
+        NSLocationAlwaysAndWhenInUseUsageDescription: JITerm использует геолокацию только чтобы iOS не останавливала Linux в фоне. Координаты не сохраняются и никуда не передаются.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rbxlu.jiterm
+        PRODUCT_NAME: JITerm
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridge/JITerm-Bridging-Header.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: JITerm.entitlements
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        GENERATE_INFOPLIST_FILE: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"

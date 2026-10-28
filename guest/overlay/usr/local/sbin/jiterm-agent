@@ -1,0 +1,27 @@
+#!/bin/sh
+# Агент JITerm. Канал управления — virtio-serial порт jiterm.control.
+# Команды от приложения:
+#   resize <tty> <rows> <cols>  — размер окна терминала (vim/htop получат SIGWINCH)
+#   time <unix-epoch>           — синхронизация часов после сна приложения
+#   sync                        — сбросить буферы на диск
+#   poweroff | reboot
+# В ответ при старте агент пишет "ready" — так приложение узнаёт, что Linux загрузился.
+PORT=/dev/virtio-ports/jiterm.control
+while :; do
+    if [ -c "$PORT" ] && exec 3<>"$PORT"; then
+        echo "ready" >&3
+        while read -r cmd a b c <&3; do
+            case "$cmd" in
+                resize)
+                    case "$a" in ttyAMA0|hvc[0-9]) stty -F "/dev/$a" rows "$b" cols "$c" 2>/dev/null ;; esac ;;
+                time) date -u -s "@$a" >/dev/null 2>&1 ;;
+                sync) sync ;;
+                ping) echo "pong" >&3 ;;
+                poweroff) sync; poweroff ;;
+                reboot) sync; reboot ;;
+            esac
+        done
+        exec 3>&-
+    fi
+    sleep 1
+done

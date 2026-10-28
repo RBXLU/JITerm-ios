@@ -1,0 +1,6 @@
+JITerm.xcodeproj/
+Generated/
+Resources/Guest/
+Frameworks/
+build/
+*.ipa

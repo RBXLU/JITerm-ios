@@ -1,0 +1,13 @@
+# JITerm inittab
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+
+# Вкладка 1: системная консоль (PL011), вкладки 2-4: virtio-консоли hvc0..hvc2
+::respawn:/usr/local/sbin/jiterm-getty ttyAMA0
+::respawn:/usr/local/sbin/jiterm-getty hvc0
+::respawn:/usr/local/sbin/jiterm-getty hvc1
+::respawn:/usr/local/sbin/jiterm-getty hvc2
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown

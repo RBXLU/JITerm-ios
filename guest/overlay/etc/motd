@@ -1,0 +1,10 @@
+
+  JITerm — Alpine Linux aarch64 на QEMU TCG (JIT)
+  Установлено: python3, pip, vim, nano, git, curl, tmux, htop, bash
+
+  apk add <пакет>          установить программу (сеть уже настроена)
+  ~/shared                 папка JITerm в приложении «Файлы» на iPhone
+  jiterm-desktop xfce      рабочий стол (xfce, lxqt, openbox, i3) → вкладка «Экран»
+  jiterm-install debian    поставить Debian или Arch (arch) рядом с Alpine
+  poweroff | reboot        выключить | перезагрузить систему
+

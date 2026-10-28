@@ -1,0 +1,87 @@
+name: JITerm Simulator screenshots
+
+# Запуск JITerm в iOS Simulator (iPhone 11) и скриншоты основных экранов.
+# QEMU в симуляторе не работает, поэтому экраны открываются в демо-режиме
+# (-JITermDemo ...), плюс один обычный запуск для проверки, что приложение не падает.
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/screenshots.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  simulator:
+    runs-on: macos-15
+    env:
+      PROJ: .
+      BUNDLE: com.rbxlu.jiterm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download guest image from release "jiterm-guest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download jiterm-guest -R "$GITHUB_REPOSITORY" -D "$PROJ/ios/Resources/Guest"
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build for simulator
+        working-directory: ${{ env.PROJ }}/ios
+        run: |
+          xcodegen generate
+          set -o pipefail
+          xcodebuild build -project JITerm.xcodeproj -scheme JITerm -configuration Debug \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build CODE_SIGNING_ALLOWED=NO \
+            | tee build.log | grep -E "error:|BUILD" || true
+          grep -q "BUILD SUCCEEDED" build.log || { grep -E "error:" build.log | head -40; exit 1; }
+      - name: Boot iPhone 11 simulator
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes -j | jq -r '[.runtimes[] | select(.platform=="iOS" and .isAvailable)] | last | .identifier')
+          echo "Runtime: $RUNTIME"
+          UDID=$(xcrun simctl create JITerm-iPhone11 com.apple.CoreSimulator.SimDeviceType.iPhone-11 "$RUNTIME" 2>/dev/null \
+            || xcrun simctl create JITerm-iPhone com.apple.CoreSimulator.SimDeviceType.iPhone-16 "$RUNTIME")
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl ui "$UDID" appearance dark
+          xcrun simctl status_bar "$UDID" override --time 9:41 --batteryLevel 100 --cellularBars 4 || true
+          xcrun simctl install "$UDID" "$PROJ/ios/build/Build/Products/Debug-iphonesimulator/JITerm.app"
+          xcrun simctl privacy "$UDID" grant location-always com.rbxlu.jiterm || xcrun simctl privacy "$UDID" grant location com.rbxlu.jiterm || true
+          xcrun simctl list devices | grep JITerm
+          echo "::notice::Симулятор: $(xcrun simctl list devices | grep JITerm), runtime $RUNTIME"
+      - name: Screenshots
+        run: |
+          mkdir -p shots
+          shot() {
+            name=$1; shift
+            xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
+            xcrun simctl launch "$UDID" "$BUNDLE" "$@"
+            sleep 6
+            xcrun simctl io "$UDID" screenshot "shots/$name.png"
+            if ! xcrun simctl spawn "$UDID" launchctl list | grep -q "$BUNDLE"; then
+              echo "::error::JITerm не работает после запуска ($name)"
+            fi
+          }
+          shot 1-terminal      -JITermDemo terminal
+          shot 2-jit-wait      -JITermDemo jit
+          shot 3-booting       -JITermDemo booting
+          shot 4-settings      -JITermDemo settings
+          shot 5-theme-dracula -JITermDemo terminal -terminal.theme dracula -terminal.fontSize 15
+          shot 6-theme-light   -JITermDemo terminal -terminal.theme solarizedLight
+          shot 7-stopped       -JITermDemo stopped
+          shot 7b-desktop      -JITermDemo desktop -ui.showDesktop 1
+          shot 8-real-launch
+          xcrun simctl terminate "$UDID" "$BUNDLE" || true
+          ls -la shots
+          ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i jiterm && echo "::warning::Есть отчёты о падениях" || echo "Падений нет"
+      - name: Publish screenshots to release "jiterm-screenshots"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete jiterm-screenshots --yes --cleanup-tag -R "$GITHUB_REPOSITORY" 2>/dev/null || true
+          gh release create jiterm-screenshots shots/*.png -R "$GITHUB_REPOSITORY" \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "JITerm: скриншоты из симулятора" \
+            --notes "Скриншоты JITerm в iOS Simulator (демо-режим, без QEMU)."

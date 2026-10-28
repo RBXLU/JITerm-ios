@@ -1,0 +1,8 @@
+#!/sbin/openrc-run
+description="JITerm host agent (terminal resize, clock sync)"
+command=/usr/local/sbin/jiterm-agent
+command_background=true
+pidfile=/run/jiterm-agent.pid
+depend() {
+    after devfs mdev
+}

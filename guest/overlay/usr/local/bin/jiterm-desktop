@@ -1,0 +1,181 @@
+#!/bin/sh
+# jiterm-desktop — графический рабочий стол для JITerm.
+#
+#   jiterm-desktop xfce|lxqt|i3|openbox [ШИРИНАxВЫСОТА]   установить (если нужно) и запустить
+#   jiterm-desktop stop                                    остановить
+#   jiterm-desktop status                                  что запущено
+#
+# Рабочий стол рисуется в X-сервере Xvnc (TigerVNC) на дисплее :1 (порт 5901).
+# Приложение JITerm подключается к нему через проброшенный порт и показывает
+# картинку во вкладке «Экран». Работает в Alpine, Debian и Arch Linux ARM.
+
+set -e
+
+DISPLAY_NUM=1
+STATE_DIR=/run/jiterm-desktop
+LOG=/var/log/jiterm-desktop.log
+DEFAULT_GEOMETRY=1280x720
+
+say() { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+die() { printf '\033[1;31mОшибка:\033[0m %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Использование:
+  jiterm-desktop xfce|lxqt|i3|openbox [1280x720]   запустить рабочий стол
+  jiterm-desktop stop                              остановить
+  jiterm-desktop status                            состояние
+
+Рабочие столы:
+  xfce     — привычный рабочий стол с панелью и меню (тяжелее)
+  lxqt     — лёгкий рабочий стол на Qt
+  openbox  — очень лёгкий оконный менеджер + панель (меню — правой кнопкой)
+  i3       — плиточный оконный менеджер для клавиатуры (самый быстрый)
+
+Картинка — во вкладке «Экран» приложения JITerm.
+EOF
+}
+
+detect_pm() {
+    if command -v apk >/dev/null 2>&1; then echo apk
+    elif command -v apt-get >/dev/null 2>&1; then echo apt
+    elif command -v pacman >/dev/null 2>&1; then echo pacman
+    else die "не найден пакетный менеджер (apk/apt/pacman)"
+    fi
+}
+
+# Пакеты: базовые (X-сервер VNC, dbus, шрифты, терминал) + рабочий стол
+packages() {
+    pm=$1; de=$2
+    case "$pm" in
+        apk)
+            base="tigervnc xinit dbus dbus-x11 font-dejavu xterm setxkbmap"
+            case "$de" in
+                xfce) extra="xfce4 xfce4-terminal adwaita-icon-theme" ;;
+                lxqt) extra="lxqt-desktop breeze-icons" ;;
+                i3) extra="i3wm i3status dmenu" ;;
+                openbox) extra="openbox tint2 pcmanfm" ;;
+            esac ;;
+        apt)
+            base="tigervnc-standalone-server dbus-x11 fonts-dejavu-core xterm x11-xkb-utils"
+            case "$de" in
+                xfce) extra="xfce4 xfce4-terminal" ;;
+                lxqt) extra="lxqt-core qterminal" ;;
+                i3) extra="i3 i3status suckless-tools" ;;
+                openbox) extra="openbox tint2 pcmanfm" ;;
+            esac ;;
+        pacman)
+            base="tigervnc dbus ttf-dejavu xterm xorg-setxkbmap xorg-xinit"
+            case "$de" in
+                xfce) extra="xfce4" ;;
+                lxqt) extra="lxqt breeze-icons" ;;
+                i3) extra="i3-wm i3status dmenu" ;;
+                openbox) extra="openbox tint2 pcmanfm" ;;
+            esac ;;
+    esac
+    echo "$base $extra"
+}
+
+install_packages() {
+    pm=$1; shift
+    say "Установка пакетов: $*"
+    case "$pm" in
+        apk) apk add $* ;;
+        apt) DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" ;;
+        pacman) pacman -Sy --needed --noconfirm "$@" ;;
+    esac
+}
+
+session_cmd() {
+    case "$1" in
+        xfce) echo "startxfce4" ;;
+        lxqt) echo "startlxqt" ;;
+        i3) echo "i3" ;;
+        openbox) echo "sh -c 'tint2 & pcmanfm --desktop & exec openbox-session'" ;;
+    esac
+}
+
+marker() {
+    case "$1" in
+        xfce) echo startxfce4 ;; lxqt) echo startlxqt ;; i3) echo i3 ;; openbox) echo openbox ;;
+    esac
+}
+
+stop_desktop() {
+    if [ -f "$STATE_DIR/session.pid" ]; then
+        kill "$(cat "$STATE_DIR/session.pid")" 2>/dev/null || true
+    fi
+    if [ -f "$STATE_DIR/xvnc.pid" ]; then
+        kill "$(cat "$STATE_DIR/xvnc.pid")" 2>/dev/null || true
+    fi
+    pkill -f "Xvnc :$DISPLAY_NUM" 2>/dev/null || true
+    rm -rf "$STATE_DIR" "/tmp/.X$DISPLAY_NUM-lock" "/tmp/.X11-unix/X$DISPLAY_NUM"
+}
+
+[ "$(id -u)" = 0 ] || die "запустите от root"
+
+case "${1:-}" in
+    ""|-h|--help|help) usage; exit 0 ;;
+    stop) stop_desktop; say "Рабочий стол остановлен"; exit 0 ;;
+    status)
+        if [ -f "$STATE_DIR/name" ] && kill -0 "$(cat "$STATE_DIR/xvnc.pid" 2>/dev/null)" 2>/dev/null; then
+            echo "Запущен: $(cat "$STATE_DIR/name"), дисплей :$DISPLAY_NUM, порт $((5900 + DISPLAY_NUM))"
+        else
+            echo "Рабочий стол не запущен"
+        fi
+        exit 0 ;;
+    xfce|lxqt|i3|openbox) DE=$1 ;;
+    *) usage; exit 1 ;;
+esac
+
+GEOMETRY=${2:-$DEFAULT_GEOMETRY}
+echo "$GEOMETRY" | grep -Eq '^[0-9]{3,4}x[0-9]{3,4}$' || die "размер должен быть вида 1280x720"
+
+PM=$(detect_pm)
+SESSION=$(session_cmd "$DE")
+if ! command -v Xvnc >/dev/null 2>&1 || ! command -v "$(marker "$DE")" >/dev/null 2>&1; then
+    say "Первый запуск $DE: ставлю пакеты (под эмуляцией это займёт несколько минут)…"
+    install_packages "$PM" $(packages "$PM" "$DE")
+fi
+command -v Xvnc >/dev/null 2>&1 || die "Xvnc не установился"
+
+stop_desktop
+mkdir -p "$STATE_DIR"
+
+# dbus нужен xfce/lxqt
+if command -v rc-service >/dev/null 2>&1; then
+    rc-service dbus start >/dev/null 2>&1 || true
+elif command -v systemctl >/dev/null 2>&1; then
+    systemctl start dbus >/dev/null 2>&1 || true
+fi
+
+say "Запуск X-сервера ($GEOMETRY)…"
+# Порт доступен только через проброс JITerm на 127.0.0.1 iPhone, поэтому без пароля
+Xvnc ":$DISPLAY_NUM" -geometry "$GEOMETRY" -depth 24 -localhost=0 \
+    -SecurityTypes None -AlwaysShared \
+    -AcceptSetDesktopSize=1 >"$LOG" 2>&1 &
+echo $! > "$STATE_DIR/xvnc.pid"
+
+i=0
+while [ ! -S "/tmp/.X11-unix/X$DISPLAY_NUM" ]; do
+    i=$((i + 1))
+    [ $i -gt 60 ] && die "X-сервер не запустился, см. $LOG"
+    sleep 1
+done
+
+say "Запуск $DE…"
+export DISPLAY=":$DISPLAY_NUM" XDG_SESSION_TYPE=x11 XDG_RUNTIME_DIR=/run/jiterm-desktop/xdg
+mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+# Раскладка us/ru, переключение ❖+Пробел (Alt+Shift занят сочетаниями i3/openbox)
+setxkbmap -layout us,ru -option grp:win_space_toggle 2>/dev/null || true
+# i3: готовый конфиг вместо мастера первого запуска (модификатор — Alt)
+if [ "$DE" = i3 ] && [ ! -e "$HOME/.config/i3/config" ] && [ -f /etc/i3/config ]; then
+    mkdir -p "$HOME/.config/i3"
+    grep -v 'i3-config-wizard' /etc/i3/config > "$HOME/.config/i3/config"
+fi
+nohup dbus-launch --exit-with-session sh -c "$SESSION" >>"$LOG" 2>&1 &
+echo $! > "$STATE_DIR/session.pid"
+echo "$DE" > "$STATE_DIR/name"
+
+say "Готово! Откройте вкладку «Экран» в JITerm."
+echo "    Остановить: jiterm-desktop stop · Журнал: $LOG"
