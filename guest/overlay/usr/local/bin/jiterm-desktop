@@ -29,7 +29,8 @@ usage() {
 Рабочие столы:
   xfce     — привычный рабочий стол с панелью и меню (тяжелее)
   lxqt     — лёгкий рабочий стол на Qt
-  openbox  — очень лёгкий оконный менеджер + панель (меню — правой кнопкой)
+  openbox  — очень лёгкий оконный менеджер, панель с кнопками терминала
+             и файлов, меню — долгим нажатием на рабочем столе
   i3       — плиточный оконный менеджер для клавиатуры (самый быстрый)
 
 Картинка — во вкладке «Экран» приложения JITerm.
@@ -54,7 +55,7 @@ packages() {
                 xfce) extra="xfce4 xfce4-terminal adwaita-icon-theme" ;;
                 lxqt) extra="lxqt-desktop breeze-icons" ;;
                 i3) extra="i3wm i3status dmenu" ;;
-                openbox) extra="openbox tint2 pcmanfm" ;;
+                openbox) extra="openbox tint2 pcmanfm mousepad adwaita-icon-theme" ;;
             esac ;;
         apt)
             base="tigervnc-standalone-server dbus-x11 fonts-dejavu-core xterm x11-xkb-utils"
@@ -62,7 +63,7 @@ packages() {
                 xfce) extra="xfce4 xfce4-terminal" ;;
                 lxqt) extra="lxqt-core qterminal" ;;
                 i3) extra="i3 i3status suckless-tools" ;;
-                openbox) extra="openbox tint2 pcmanfm" ;;
+                openbox) extra="openbox tint2 pcmanfm mousepad adwaita-icon-theme" ;;
             esac ;;
         pacman)
             base="tigervnc dbus ttf-dejavu xterm xorg-setxkbmap xorg-xinit"
@@ -70,7 +71,7 @@ packages() {
                 xfce) extra="xfce4" ;;
                 lxqt) extra="lxqt breeze-icons" ;;
                 i3) extra="i3-wm i3status dmenu" ;;
-                openbox) extra="openbox tint2 pcmanfm" ;;
+                openbox) extra="openbox tint2 pcmanfm mousepad adwaita-icon-theme" ;;
             esac ;;
     esac
     echo "$base $extra"
@@ -95,10 +96,116 @@ session_cmd() {
     esac
 }
 
+# Программы, по которым видно, что окружение уже установлено
 marker() {
     case "$1" in
-        xfce) echo startxfce4 ;; lxqt) echo startlxqt ;; i3) echo i3 ;; openbox) echo openbox ;;
+        xfce) echo startxfce4 ;; lxqt) echo startlxqt ;; i3) echo i3 ;; openbox) echo "openbox tint2 pcmanfm mousepad" ;;
     esac
+}
+
+# Openbox: меню (долгое нажатие на рабочем столе), панель с кнопками
+# терминала и файлов, однотонный фон. Свои настройки пользователя не трогаем.
+setup_openbox() {
+    apps="$HOME/.local/share/applications"
+    mkdir -p "$apps" "$HOME/.config/openbox" "$HOME/.config/tint2" "$HOME/.config/pcmanfm/default"
+    term="xterm -fa Monospace -fs 11"
+    desktop_file() { # файл название команда иконка
+        [ -e "$apps/$1.desktop" ] || printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nIcon=%s\nTerminal=false\n' \
+            "$2" "$3" "$4" > "$apps/$1.desktop"
+    }
+    desktop_file jiterm-terminal "Терминал" "$term" /usr/share/pixmaps/xterm-color_48x48.xpm
+    desktop_file jiterm-files "Файлы" "pcmanfm $HOME" user-home
+    desktop_file jiterm-shared "Общая папка iPhone" "pcmanfm $HOME/shared" folder-remote
+    desktop_file jiterm-editor "Текстовый редактор" mousepad /usr/share/icons/hicolor/48x48/apps/org.xfce.mousepad.png
+
+    [ -e "$HOME/.config/openbox/menu.xml" ] || cat > "$HOME/.config/openbox/menu.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Openbox">
+    <item label="Терминал"><action name="Execute"><command>$term</command></action></item>
+    <item label="Файлы"><action name="Execute"><command>pcmanfm $HOME</command></action></item>
+    <item label="Общая папка iPhone"><action name="Execute"><command>pcmanfm $HOME/shared</command></action></item>
+    <item label="Текстовый редактор"><action name="Execute"><command>mousepad</command></action></item>
+    <separator />
+    <item label="Перечитать настройки Openbox"><action name="Reconfigure" /></item>
+    <item label="Выйти из Openbox"><action name="Exit" /></item>
+  </menu>
+</openbox_menu>
+EOF
+
+    # Правая кнопка (долгое нажатие) на рабочем столе открывает меню Openbox
+    [ -e "$HOME/.config/pcmanfm/default/desktop-items-0.conf" ] || cat > "$HOME/.config/pcmanfm/default/desktop-items-0.conf" <<'EOF'
+[*]
+wallpaper_mode=color
+desktop_bg=#2e3440
+desktop_fg=#eceff4
+desktop_shadow=#000000
+show_wm_menu=1
+show_documents=0
+show_trash=0
+show_mounts=0
+EOF
+
+    # Если pcmanfm уже создал свой файл настроек — только включаем меню Openbox
+    if ! grep -q '^show_wm_menu=' "$HOME/.config/pcmanfm/default/desktop-items-0.conf"; then
+        sed -i '/^\[\*\]/a show_wm_menu=1' "$HOME/.config/pcmanfm/default/desktop-items-0.conf"
+    fi
+
+    [ -e "$HOME/.config/tint2/tint2rc" ] || cat > "$HOME/.config/tint2/tint2rc" <<EOF
+# Фон 1 — панель, фон 2 — активное окно
+rounded = 0
+border_width = 0
+background_color = #1e222a 100
+border_color = #000000 0
+
+rounded = 4
+border_width = 0
+background_color = #4c566a 100
+border_color = #000000 0
+
+panel_items = LTSC
+panel_size = 100% 36
+panel_margin = 0 0
+panel_padding = 4 2 6
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+wm_menu = 1
+strut_policy = follow_size
+
+launcher_padding = 2 2 6
+launcher_background_id = 0
+launcher_icon_size = 28
+launcher_icon_theme = Adwaita
+launcher_item_app = $apps/jiterm-terminal.desktop
+launcher_item_app = $apps/jiterm-files.desktop
+launcher_item_app = $apps/jiterm-shared.desktop
+launcher_item_app = $apps/jiterm-editor.desktop
+
+taskbar_mode = single_desktop
+taskbar_padding = 4 2 4
+taskbar_background_id = 0
+task_icon = 1
+task_text = 1
+task_centered = 0
+task_maximum_size = 200 32
+task_padding = 6 2 4
+task_font = DejaVu Sans 10
+task_font_color = #eceff4 100
+task_background_id = 0
+task_active_background_id = 2
+mouse_left = toggle_iconify
+
+systray_padding = 2 2 4
+systray_background_id = 0
+systray_icon_size = 22
+
+time1_format = %H:%M
+time1_font = DejaVu Sans Bold 11
+clock_font_color = #eceff4 100
+clock_padding = 8 0
+clock_background_id = 0
+EOF
 }
 
 stop_desktop() {
@@ -133,7 +240,11 @@ echo "$GEOMETRY" | grep -Eq '^[0-9]{3,4}x[0-9]{3,4}$' || die "размер до�
 
 PM=$(detect_pm)
 SESSION=$(session_cmd "$DE")
-if ! command -v Xvnc >/dev/null 2>&1 || ! command -v "$(marker "$DE")" >/dev/null 2>&1; then
+missing=0
+for cmd in Xvnc $(marker "$DE"); do
+    command -v "$cmd" >/dev/null 2>&1 || missing=1
+done
+if [ "$missing" = 1 ]; then
     say "Первый запуск $DE: ставлю пакеты (под эмуляцией это займёт несколько минут)…"
     install_packages "$PM" $(packages "$PM" "$DE")
 fi
@@ -173,6 +284,7 @@ if [ "$DE" = i3 ] && [ ! -e "$HOME/.config/i3/config" ] && [ -f /etc/i3/config ]
     mkdir -p "$HOME/.config/i3"
     grep -v 'i3-config-wizard' /etc/i3/config > "$HOME/.config/i3/config"
 fi
+[ "$DE" = openbox ] && setup_openbox
 nohup dbus-launch --exit-with-session sh -c "$SESSION" >>"$LOG" 2>&1 &
 echo $! > "$STATE_DIR/session.pid"
 echo "$DE" > "$STATE_DIR/name"
