@@ -33,8 +33,8 @@ enum GuestStorage {
         Bundle.main.bundleURL.appendingPathComponent("Guest", isDirectory: true)
     }
 
-    static var kernelURL: URL { bundleGuestURL.appendingPathComponent("vmlinuz-virt") }
-    static var initrdURL: URL { bundleGuestURL.appendingPathComponent("initramfs-virt") }
+    static var bundledKernelURL: URL { bundleGuestURL.appendingPathComponent("vmlinuz-virt") }
+    static var bundledInitrdURL: URL { bundleGuestURL.appendingPathComponent("initramfs-virt") }
     static var bundledDiskURL: URL { bundleGuestURL.appendingPathComponent("rootfs.qcow2") }
 
     static var qemuLibraryURL: URL {
@@ -48,6 +48,10 @@ enum GuestStorage {
     }
 
     static var diskURL: URL { dataURL.appendingPathComponent("rootfs.qcow2") }
+    /// Ядро и initramfs хранятся рядом с диском: модули ядра лежат на диске,
+    /// поэтому при обновлении приложения ядро не должно меняться.
+    static var kernelURL: URL { dataURL.appendingPathComponent("vmlinuz-virt") }
+    static var initrdURL: URL { dataURL.appendingPathComponent("initramfs-virt") }
 
     static var sharedURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -78,7 +82,7 @@ enum GuestStorage {
     /// Проверяет ресурсы и при необходимости разворачивает диск.
     static func prepare() throws {
         let fm = FileManager.default
-        for url in [kernelURL, initrdURL, bundledDiskURL, qemuLibraryURL] where !fm.fileExists(atPath: url.path) {
+        for url in [bundledKernelURL, bundledInitrdURL, bundledDiskURL, qemuLibraryURL] where !fm.fileExists(atPath: url.path) {
             throw GuestStorageError.missingResource(url.lastPathComponent)
         }
         try fm.createDirectory(at: dataURL, withIntermediateDirectories: true)
@@ -95,7 +99,14 @@ enum GuestStorage {
             let tmp = dataURL.appendingPathComponent("rootfs.qcow2.part")
             try? fm.removeItem(at: tmp)
             try fm.copyItem(at: bundledDiskURL, to: tmp)
+            try? fm.removeItem(at: kernelURL)
+            try? fm.removeItem(at: initrdURL)
             try fm.moveItem(at: tmp, to: diskURL)
+        }
+        // Новый диск (или диск от версии, где ядро бралось из приложения) — берём ядро из приложения
+        for (bundled, installed) in [(bundledKernelURL, kernelURL), (bundledInitrdURL, initrdURL)]
+        where !fm.fileExists(atPath: installed.path) {
+            try fm.copyItem(at: bundled, to: installed)
         }
         try fm.createDirectory(at: sharedURL, withIntermediateDirectories: true)
         let readme = sharedURL.appendingPathComponent("README.txt")
@@ -112,8 +123,11 @@ enum GuestStorage {
 
     /// Удаляет диск — при следующем запуске система развернётся заново.
     static func resetDisk() throws {
-        if FileManager.default.fileExists(atPath: diskURL.path) {
-            try FileManager.default.removeItem(at: diskURL)
+        let fm = FileManager.default
+        if fm.fileExists(atPath: diskURL.path) {
+            try fm.removeItem(at: diskURL)
         }
+        try? fm.removeItem(at: kernelURL)
+        try? fm.removeItem(at: initrdURL)
     }
 }
